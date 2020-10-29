@@ -1,6 +1,5 @@
 import os
 import sys
-import lmdb
 import h5py
 import numpy as np
 import argparse
@@ -21,8 +20,7 @@ def read_img(path):
 parser = argparse.ArgumentParser()
 parser.add_argument("split_file", type=str, help="the pickled split file")
 parser.add_argument("split", type=str, help="the split to use, e.g. split-0")
-parser.add_argument("frame_db", type=str, help="the database to store extracted frames, either LMDB or HDF5")
-parser.add_argument("db_type", type=str, help="type of the database, LMDB or HDF5")
+parser.add_argument("frame_db", type=str, help="the database to store extracted frames")
 # resize options
 parser.add_argument("-a", "--asis", action="store_true", help="do not resize frames")
 parser.add_argument("-s", "--short", type=int, default=0, help="keep the aspect ration and scale the shorter side to s")
@@ -74,17 +72,9 @@ split = pickle.load(open(args.split_file,'rb'))
 print(split.keys(), 'using %s' %(args.split))
 all_videos = split[args.split]
 
-if args.db_type == 'LMDB':
-    frame_db = lmdb.open(args.frame_db, map_size=1<<40)
-elif args.db_type == 'HDF5':
-    call(["rm", "-rf", args.frame_db])
-    frame_db = h5py.File(args.frame_db, 'w') # write mode
-    frame_db 
-else:
-    raise Exception('Unknown db_type')
-    sys.exit(1)
-
-is_lmdb = (args.db_type == 'LMDB')
+call(["rm", "-rf", args.frame_db])
+frame_db = h5py.File(args.frame_db, 'w') # write mode
+frame_db
 
 tmp_dir = '/tmp'
 
@@ -151,20 +141,15 @@ for vid in tqdm(all_videos, ncols=64):
         elif args.skip > 1:
             if (fid-1) % args.skip != 0:
                 continue
-        files.append((fid, f_name))
-
-    if is_lmdb:
-        with frame_db.begin(write=True, buffers=True) as txn:
-            for fid, f_name in files:
-                s = read_img(os.path.join(v_dir, f_name))
-                key = "%s/%08d" % (vvid, fid)   # by padding zeros, frames in db are stored in order
-                txn.put(key, s)
-    else:
-      	dataset = frame_db.create_dataset("frames", (len(files),) + load_image(os.path.join(v_dir, files[0][1])).shape, dtype='uint8')
-        for index, (fid, f_name) in enumerate(files):
-            image_data = load_image(os.path.join(v_dir, f_name))
-            dataset[index] = image_data
-        frame_db.close()
+        files.append(f_name)
+    
+    dataset = frame_db.create_dataset("frames", (len(files),) + load_image(os.path.join(v_dir, files[0])).shape, dtype='uint8')
+    
+    for index, f_name in enumerate(files):
+        image = load_image(os.path.join(v_dir, f_name))
+        dataset[index] = image
+    
+    frame_db.close()
 
     call(["rm", "-rf", v_dir])
     done_videos.add(vvid)
