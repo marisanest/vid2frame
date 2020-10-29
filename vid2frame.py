@@ -77,6 +77,7 @@ all_videos = split[args.split]
 if args.db_type == 'LMDB':
     frame_db = lmdb.open(args.frame_db, map_size=1<<40)
 elif args.db_type == 'HDF5':
+    call(["rm", "-rf", args.frame_db])
     frame_db = h5py.File(args.frame_db, 'w') # write mode
     frame_db 
 else:
