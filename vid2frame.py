@@ -6,6 +6,7 @@ import numpy as np
 import argparse
 import subprocess
 import json
+from PIL import Image
 
 from tqdm import tqdm
 from subprocess import call
@@ -54,6 +55,12 @@ def get_frame_rate(vid):
 
     return r_frame_rate
 
+def load_image(filename) :
+    img = Image.open(filename, 'r')
+    img.load()
+    data = np.asarray( img, dtype="uint8" )
+    return data
+
 # sanity check of the options
 if args.asis:
     assert args.short == 0 and args.height == 0 and args.width == 0
@@ -70,7 +77,8 @@ all_videos = split[args.split]
 if args.db_type == 'LMDB':
     frame_db = lmdb.open(args.frame_db, map_size=1<<40)
 elif args.db_type == 'HDF5':
-    frame_db = h5py.File(args.frame_db, 'a') # append mode
+    frame_db = h5py.File(args.frame_db, 'w') # write mode
+    frame_db 
 else:
     raise Exception('Unknown db_type')
     sys.exit(1)
@@ -144,7 +152,6 @@ for vid in tqdm(all_videos, ncols=64):
                 continue
         files.append((fid, f_name))
 
-
     if is_lmdb:
         with frame_db.begin(write=True, buffers=True) as txn:
             for fid, f_name in files:
@@ -152,13 +159,11 @@ for vid in tqdm(all_videos, ncols=64):
                 key = "%s/%08d" % (vvid, fid)   # by padding zeros, frames in db are stored in order
                 txn.put(key, s)
     else:
-        for fid, f_name in files:
-            s = read_img(os.path.join(v_dir, f_name))
-            key = "%s/%08d" % (vvid, fid)   # by padding zeros, frames in db are stored in order
-            frame_db[key] = np.void(s)
+      	dataset = frame_db.create_dataset("frames", (len(files),) + load_image(os.path.join(v_dir, files[0][1])).shape, dtype='uint8')
+        for index, (fid, f_name) in enumerate(files):
+            image_data = load_image(os.path.join(v_dir, f_name))
+            dataset[index] = image_data
+        frame_db.close()
 
     call(["rm", "-rf", v_dir])
     done_videos.add(vvid)
-
-
-
