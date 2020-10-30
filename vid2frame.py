@@ -7,20 +7,11 @@ import subprocess
 import json
 from PIL import Image
 
-from tqdm import tqdm
 from subprocess import call
-import cPickle as pickle
-
-
-def read_img(path):
-    with open(path, 'rb') as f:
-        return f.read()
-
 
 parser = argparse.ArgumentParser()
-parser.add_argument("split_file", type=str, help="the pickled split file")
-parser.add_argument("split", type=str, help="the split to use, e.g. split-0")
-parser.add_argument("frame_db", type=str, help="the database to store extracted frames")
+parser.add_argument("input_path", type=str, help="the input file path")
+parser.add_argument("output_path", type=str, help="the output file path")
 # resize options
 parser.add_argument("-a", "--asis", action="store_true", help="do not resize frames")
 parser.add_argument("-s", "--short", type=int, default=0, help="keep the aspect ration and scale the shorter side to s")
@@ -67,89 +58,73 @@ if args.short > 0:
 if args.height > 0 or args.width > 0:
     assert (not args.asis) and args.height > 0 and args.width > 0 and args.short == 0
 
-
-split = pickle.load(open(args.split_file,'rb'))
-print(split.keys(), 'using %s' %(args.split))
-all_videos = split[args.split]
-
-call(["rm", "-rf", args.frame_db])
-frame_db = h5py.File(args.frame_db, 'w') # write mode
-frame_db
-
 tmp_dir = '/tmp'
+vid = args.input_path
+vvid, _ = os.path.splitext(vid) # discard extension
+_, vvid = os.path.split(vvid)   # get filename without path
+v_dir = os.path.join(tmp_dir, vvid)
+call(["rm", "-rf", v_dir])
+os.mkdir(v_dir)    # caching directory to store ffmpeg extracted frames
 
-done_videos = set()
+if args.asis:
+    vf_scale = []
+elif args.short > 0:
+    vf_scale = ["-vf",
+                "scale='iw*1.0/min(iw,ih)*%d':'ih*1.0/min(iw,ih)*%d'" \
+                        % (args.short, args.short)]
+elif args.height > 0 and args.width > 0:
+    vf_scale = ["-vf", "scale=%d:%d" % (args.width, args.height)]
+else:
+    raise Exception('Unspecified frame scale option')
 
-for vid in tqdm(all_videos, ncols=64):
-    #vvid = vid.split('/')[-1].split('.')[0]
-    vvid, _ = os.path.splitext(vid) # discard extension
-    _, vvid = os.path.split(vvid)   # get filename without path
-    if vvid in done_videos:
-        print 'video %s seen before, ignored.' % vvid
+if args.interval > 0:
+    r_frame_rate = get_frame_rate(vid)
+    if r_frame_rate == 0:
+        print("frame rate is 0, skip: %s"%vid)
+        continue
+    vf_sample = ["-vsync","vfr",
+                  "-vf","select=not(mod(n\,%d))" % (int(round(args.interval*r_frame_rate)))]
+    assert args.num_frame <= 0 and args.skip == 1, \
+            "No other sampling options are allowed when --interval is set"
+else:
+    vf_sample = []
 
-    v_dir = os.path.join(tmp_dir, vvid)
-    call(["rm", "-rf", v_dir])
-    os.mkdir(v_dir)    # caching directory to store ffmpeg extracted frames
+call(["ffmpeg",
+        "-loglevel", "panic",
+        "-i", vid,
+        ]
+        + vf_scale
+        + vf_sample
+        +
+        [
+        "-qscale:v", "2",
+        v_dir+"/%8d.jpg"])
 
-    if args.asis:
-        vf_scale = []
-    elif args.short > 0:
-        vf_scale = ["-vf",
-                    "scale='iw*1.0/min(iw,ih)*%d':'ih*1.0/min(iw,ih)*%d'" \
-                            % (args.short, args.short)]
-    elif args.height > 0 and args.width > 0:
-        vf_scale = ["-vf", "scale=%d:%d" % (args.width, args.height)]
-    else:
-        raise Exception('Unspecified frame scale option')
+sample = (args.num_frame > 0)
+if sample:
+    ids = [int(f.split('.')[0]) for f in os.listdir(v_dir)]
+    sample_ids = set(list(np.linspace(min(ids), max(ids),
+                            args.num_frame, endpoint=True, dtype=np.int32)))
 
-    if args.interval > 0:
-        r_frame_rate = get_frame_rate(vid)
-        if r_frame_rate == 0:
-            print("frame rate is 0, skip: %s"%vid)
-            continue
-        vf_sample = ["-vsync","vfr",
-                     "-vf","select=not(mod(n\,%d))" % (int(round(args.interval*r_frame_rate)))]
-        assert args.num_frame <= 0 and args.skip == 1, \
-                "No other sampling options are allowed when --interval is set"
-    else:
-        vf_sample = []
+files = []
+for f_name in os.listdir(v_dir):
+    fid = int(f_name.split('.')[0])
 
-    call(["ffmpeg",
-            "-loglevel", "panic",
-            "-i", vid,
-            ]
-            + vf_scale
-            + vf_sample
-            +
-            [
-            "-qscale:v", "2",
-            v_dir+"/%8d.jpg"])
-
-    sample = (args.num_frame > 0)
     if sample:
-        ids = [int(f.split('.')[0]) for f in os.listdir(v_dir)]
-        sample_ids = set(list(np.linspace(min(ids), max(ids),
-                                args.num_frame, endpoint=True, dtype=np.int32)))
+        if fid not in sample_ids:
+            continue
+    elif args.skip > 1:
+        if (fid-1) % args.skip != 0:
+            continue
+    files.append((fid, f_name))
 
-    files = []
-    for f_name in os.listdir(v_dir):
-        fid = int(f_name.split('.')[0])
+call(["rm", "-rf", args.output_path])
 
-        if sample:
-            if fid not in sample_ids:
-                continue
-        elif args.skip > 1:
-            if (fid-1) % args.skip != 0:
-                continue
-        files.append(f_name)
-    
-    dataset = frame_db.create_dataset("frames", (len(files),) + load_image(os.path.join(v_dir, files[0])).shape, dtype='uint8')
-    
-    for index, f_name in enumerate(files):
+with h5py.File(args.output_path, 'w') as output_file: # write mode
+    for index, (fid, f_name) in enumerate(files):
+        group_name = "%08d" % (fid)   # by padding zeros, frames in db are stored in order
+        group = output_file.create_group(group_name)
         image = load_image(os.path.join(v_dir, f_name))
-        dataset[index] = image
-    
-    frame_db.close()
+        group.create_dataset('data', image.shape, dtype='uint8', data=image)
 
-    call(["rm", "-rf", v_dir])
-    done_videos.add(vvid)
+call(["rm", "-rf", v_dir])
