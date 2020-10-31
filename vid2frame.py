@@ -81,7 +81,6 @@ if args.interval > 0:
     r_frame_rate = get_frame_rate(vid)
     if r_frame_rate == 0:
         print("frame rate is 0, skip: %s"%vid)
-        continue
     vf_sample = ["-vsync","vfr",
                   "-vf","select=not(mod(n\,%d))" % (int(round(args.interval*r_frame_rate)))]
     assert args.num_frame <= 0 and args.skip == 1, \
